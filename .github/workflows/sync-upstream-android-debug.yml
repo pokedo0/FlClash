@@ -33,7 +33,101 @@ jobs:
           echo "Latest upstream tag: $latest_tag"
           echo "Latest upstream sha: $latest_sha"
 
+      - name: Read synced upstream tag
+        id: local_sync
+        run: |
+          set -euo pipefail
+          synced_tag=""
+          if [ -f .upstream-version ]; then
+            synced_tag=$(tr -d '\r\n' < .upstream-version)
+          fi
+          echo "synced_tag=$synced_tag" >> "$GITHUB_OUTPUT"
+          echo "Current synced tag: ${synced_tag:-<none>}"
+
+      - name: Check whether sync is needed
+        id: sync_check
+        env:
+          LATEST_TAG: ${{ steps.upstream.outputs.latest_tag }}
+          SYNCED_TAG: ${{ steps.local_sync.outputs.synced_tag }}
+        run: |
+          set -euo pipefail
+          if [ "$LATEST_TAG" = "$SYNCED_TAG" ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream tag unchanged; skipping sync, commit, and release."
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream tag changed from ${SYNCED_TAG:-<none>} to $LATEST_TAG"
+          fi
+
+      - name: Stop when no new upstream version
+        if: steps.sync_check.outputs.needed != 'true'
+        run: |
+          echo "No new upstream version. Workflow finished."
+
+      - name: Add upstream remote
+        if: steps.sync_check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/chen08209/FlClash.git || true
+          git fetch upstream --tags --force
+
+      - name: Create local override patch
+        if: steps.sync_check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          git diff --binary HEAD -- android/app/build.gradle.kts .github/workflows/sync-upstream-android-debug.yml > local-overrides.patch || true
+          ls -lah local-overrides.patch
+
+      - name: Sync upstream tag into current branch
+        if: steps.sync_check.outputs.needed == 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+          git checkout ${GITHUB_REF_NAME}
+          git merge --no-ff --no-commit "tags/$TAG"
+
+      - name: Reapply local overrides
+        if: steps.sync_check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          if [ -s local-overrides.patch ]; then
+            git apply --3way --index local-overrides.patch
+          fi
+
+      - name: Update synced upstream tag file
+        if: steps.sync_check.outputs.needed == 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$TAG" > .upstream-version
+          git add .upstream-version android/app/build.gradle.kts .github/workflows/sync-upstream-android-debug.yml
+
+      - name: Commit synced upstream changes
+        if: steps.sync_check.outputs.needed == 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+          if git diff --cached --quiet; then
+            echo "No staged changes after sync; nothing to commit."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "sync: upstream $TAG"
+            git push origin HEAD:${GITHUB_REF_NAME}
+          fi
+
+      - name: Capture release target commit
+        if: steps.sync_check.outputs.needed == 'true'
+        id: release_target
+        run: |
+          set -euo pipefail
+          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Resolve release name
+        if: steps.sync_check.outputs.needed == 'true'
         id: release_meta
         env:
           GH_TOKEN: ${{ github.token }}
@@ -54,21 +148,8 @@ jobs:
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "release_title=$release_title" >> "$GITHUB_OUTPUT"
 
-      - name: Add upstream remote
-        run: |
-          git remote add upstream https://github.com/chen08209/FlClash.git || true
-          git fetch upstream --tags --force
-
-      - name: Checkout upstream tag
-        env:
-          TAG: ${{ steps.upstream.outputs.latest_tag }}
-        run: |
-          set -euo pipefail
-          git checkout -B "build-$TAG" "tags/$TAG"
-          git submodule sync --recursive
-          git submodule update --init --recursive
-
       - name: Setup Java
+        if: steps.sync_check.outputs.needed == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -76,6 +157,7 @@ jobs:
           cache: gradle
 
       - name: Setup Go
+        if: steps.sync_check.outputs.needed == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: "1.24.0"
@@ -83,6 +165,7 @@ jobs:
             core/go.sum
 
       - name: Setup Flutter
+        if: steps.sync_check.outputs.needed == 'true'
         uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -90,15 +173,18 @@ jobs:
           cache: true
 
       - name: Get Flutter dependencies
+        if: steps.sync_check.outputs.needed == 'true'
         run: |
           flutter --version
           flutter pub get
 
       - name: Build Android release package
+        if: steps.sync_check.outputs.needed == 'true'
         run: |
           dart setup.dart android
 
       - name: Prepare release assets
+        if: steps.sync_check.outputs.needed == 'true'
         env:
           TAG: ${{ steps.upstream.outputs.latest_tag }}
         run: |
@@ -111,19 +197,33 @@ jobs:
           ls -lah release-assets
           test -n "$(find release-assets -maxdepth 1 -type f \( -name '*.apk' \))"
           cat > release-notes.md <<EOF
-          Sync upstream release $TAG and build Android release package.
+          Sync upstream release $TAG, commit synced changes to this repository, and build Android release package.
 
           - Source: chen08209/FlClash@$TAG
           - Target: Android release APK only
           - Signing: debug keystore fallback for self-use upgrade installs
           EOF
 
+      - name: Print APK package names
+        if: steps.sync_check.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y aapt
+          mapfile -t files < <(find release-assets -maxdepth 1 -type f \( -name '*.apk' \))
+          test "${#files[@]}" -gt 0
+          for file in "${files[@]}"; do
+            echo "Inspecting $(basename \"$file\")"
+            aapt dump badging "$file" | sed -n "s/^package: name='\([^']*\)'.*/package=\1/p"
+          done
+
       - name: Create GitHub release via API
+        if: steps.sync_check.outputs.needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_meta.outputs.release_tag }}
           RELEASE_TITLE: ${{ steps.release_meta.outputs.release_title }}
-          TARGET_SHA: ${{ steps.upstream.outputs.latest_sha }}
+          TARGET_SHA: ${{ steps.release_target.outputs.commit_sha }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -137,6 +237,7 @@ jobs:
             -f body="$(cat release-notes.md)"
 
       - name: Upload assets to release
+        if: steps.sync_check.outputs.needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_meta.outputs.release_tag }}
