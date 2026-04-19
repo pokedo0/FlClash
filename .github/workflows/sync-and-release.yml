@@ -43,7 +43,7 @@ jobs:
           echo "has_new_release=$is_new_release" >> "$GITHUB_OUTPUT"
           echo "upstream_tag=$UPSTREAM_TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Sync fork with upstream (master)
+      - name: Sync fork with upstream (main)
         if: steps.check.outputs.has_new_release == 'true'
         shell: bash
         run: |
@@ -55,7 +55,7 @@ jobs:
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/${{ github.repository }}/merge-upstream" \
-            -d '{"branch":"master"}')
+            -d '{"branch":"main"}')
 
           if [[ "$HTTP_CODE" == "200" || "$HTTP_CODE" == "409" ]]; then
             echo "✅ Fork synced (or already up-to-date)"
