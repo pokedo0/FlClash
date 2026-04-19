@@ -2,8 +2,6 @@ name: sync upstream android debug release
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 3 * * *"
 
 permissions:
   contents: write
@@ -35,21 +33,26 @@ jobs:
           echo "Latest upstream tag: $latest_tag"
           echo "Latest upstream sha: $latest_sha"
 
-      - name: Detect existing release
-        id: detect
+      - name: Resolve release name
+        id: release_meta
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.upstream.outputs.latest_tag }}
+          BASE_TAG: ${{ steps.upstream.outputs.latest_tag }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if gh api "repos/$REPO/releases/tags/$TAG" >/dev/null 2>&1; then
-            echo "release_exists=true" >> "$GITHUB_OUTPUT"
-            echo "Release already exists: $TAG"
+          if gh api "repos/$REPO/releases/tags/$BASE_TAG" >/dev/null 2>&1; then
+            suffix=$(date -u +'%Y%m%d-%H%M%S')
+            release_tag="${BASE_TAG}-${suffix}"
+            release_title="${BASE_TAG} debug ${suffix}"
+            echo "Existing release found for $BASE_TAG, using $release_tag"
           else
-            echo "release_exists=false" >> "$GITHUB_OUTPUT"
-            echo "Release does not exist yet: $TAG"
+            release_tag="$BASE_TAG"
+            release_title="$BASE_TAG debug"
+            echo "No existing release found for $BASE_TAG, using original tag"
           fi
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "release_title=$release_title" >> "$GITHUB_OUTPUT"
 
       - name: Add upstream remote
         run: |
@@ -116,10 +119,10 @@ jobs:
           EOF
 
       - name: Create GitHub release via API
-        if: steps.detect.outputs.release_exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.upstream.outputs.latest_tag }}
+          RELEASE_TAG: ${{ steps.release_meta.outputs.release_tag }}
+          RELEASE_TITLE: ${{ steps.release_meta.outputs.release_title }}
           TARGET_SHA: ${{ steps.upstream.outputs.latest_sha }}
           REPO: ${{ github.repository }}
         run: |
@@ -128,19 +131,19 @@ jobs:
             --method POST \
             -H "Accept: application/vnd.github+json" \
             "repos/$REPO/releases" \
-            -f tag_name="$TAG" \
+            -f tag_name="$RELEASE_TAG" \
             -f target_commitish="$TARGET_SHA" \
-            -f name="$TAG debug" \
+            -f name="$RELEASE_TITLE" \
             -f body="$(cat release-notes.md)"
 
       - name: Upload assets to release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.upstream.outputs.latest_tag }}
+          RELEASE_TAG: ${{ steps.release_meta.outputs.release_tag }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           mapfile -t files < <(find release-assets -maxdepth 1 -type f \( -name '*.apk' \))
           printf 'Uploading files:\n%s\n' "${files[@]}"
           test "${#files[@]}" -gt 0
-          gh release upload "$TAG" "${files[@]}" --clobber -R "$REPO"
+          gh release upload "$RELEASE_TAG" "${files[@]}" --clobber -R "$REPO"
