@@ -52,34 +52,29 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$LATEST_TAG" = "$SYNCED_TAG" ]; then
-            echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "Upstream tag unchanged; skipping sync, commit, and release."
+            echo "sync_needed=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream tag unchanged; skip sync commit and continue packaging."
           else
-            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "sync_needed=true" >> "$GITHUB_OUTPUT"
             echo "Upstream tag changed from ${SYNCED_TAG:-<none>} to $LATEST_TAG"
           fi
 
-      - name: Stop when no new upstream version
-        if: steps.sync_check.outputs.needed != 'true'
-        run: |
-          echo "No new upstream version. Workflow finished."
-
       - name: Add upstream remote
-        if: steps.sync_check.outputs.needed == 'true'
+        if: steps.sync_check.outputs.sync_needed == 'true'
         run: |
           set -euo pipefail
           git remote add upstream https://github.com/chen08209/FlClash.git || true
           git fetch upstream --tags --force
 
       - name: Create local override patch
-        if: steps.sync_check.outputs.needed == 'true'
+        if: steps.sync_check.outputs.sync_needed == 'true'
         run: |
           set -euo pipefail
           git diff --binary HEAD -- android/app/build.gradle.kts .github/workflows/sync-upstream-android-debug.yml > local-overrides.patch || true
           ls -lah local-overrides.patch
 
       - name: Sync upstream tag into current branch
-        if: steps.sync_check.outputs.needed == 'true'
+        if: steps.sync_check.outputs.sync_needed == 'true'
         env:
           TAG: ${{ steps.upstream.outputs.latest_tag }}
         run: |
@@ -88,7 +83,7 @@ jobs:
           git merge --no-ff --no-commit "tags/$TAG"
 
       - name: Reapply local overrides
-        if: steps.sync_check.outputs.needed == 'true'
+        if: steps.sync_check.outputs.sync_needed == 'true'
         run: |
           set -euo pipefail
           if [ -s local-overrides.patch ]; then
@@ -96,7 +91,7 @@ jobs:
           fi
 
       - name: Update synced upstream tag file
-        if: steps.sync_check.outputs.needed == 'true'
+        if: steps.sync_check.outputs.sync_needed == 'true'
         env:
           TAG: ${{ steps.upstream.outputs.latest_tag }}
         run: |
@@ -105,7 +100,7 @@ jobs:
           git add .upstream-version android/app/build.gradle.kts .github/workflows/sync-upstream-android-debug.yml
 
       - name: Commit synced upstream changes
-        if: steps.sync_check.outputs.needed == 'true'
+        if: steps.sync_check.outputs.sync_needed == 'true'
         env:
           TAG: ${{ steps.upstream.outputs.latest_tag }}
         run: |
@@ -120,14 +115,12 @@ jobs:
           fi
 
       - name: Capture release target commit
-        if: steps.sync_check.outputs.needed == 'true'
         id: release_target
         run: |
           set -euo pipefail
           echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Resolve release name
-        if: steps.sync_check.outputs.needed == 'true'
         id: release_meta
         env:
           GH_TOKEN: ${{ github.token }}
@@ -149,7 +142,6 @@ jobs:
           echo "release_title=$release_title" >> "$GITHUB_OUTPUT"
 
       - name: Setup Java
-        if: steps.sync_check.outputs.needed == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -157,7 +149,6 @@ jobs:
           cache: gradle
 
       - name: Setup Go
-        if: steps.sync_check.outputs.needed == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: "1.24.0"
@@ -165,7 +156,6 @@ jobs:
             core/go.sum
 
       - name: Setup Flutter
-        if: steps.sync_check.outputs.needed == 'true'
         uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -173,18 +163,15 @@ jobs:
           cache: true
 
       - name: Get Flutter dependencies
-        if: steps.sync_check.outputs.needed == 'true'
         run: |
           flutter --version
           flutter pub get
 
       - name: Build Android release package
-        if: steps.sync_check.outputs.needed == 'true'
         run: |
           dart setup.dart android
 
       - name: Prepare release assets
-        if: steps.sync_check.outputs.needed == 'true'
         env:
           TAG: ${{ steps.upstream.outputs.latest_tag }}
         run: |
@@ -205,7 +192,6 @@ jobs:
           EOF
 
       - name: Print APK package names
-        if: steps.sync_check.outputs.needed == 'true'
         run: |
           set -euo pipefail
           sudo apt-get update -y
@@ -218,7 +204,6 @@ jobs:
           done
 
       - name: Create GitHub release via API
-        if: steps.sync_check.outputs.needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_meta.outputs.release_tag }}
@@ -237,7 +222,6 @@ jobs:
             -f body="$(cat release-notes.md)"
 
       - name: Upload assets to release
-        if: steps.sync_check.outputs.needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_meta.outputs.release_tag }}
