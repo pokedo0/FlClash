@@ -3,7 +3,7 @@ name: sync upstream android debug release
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 3 * * *'
+    - cron: "17 3 * * *"
 
 permissions:
   contents: write
@@ -69,13 +69,13 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
           cache: gradle
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.0'
+          go-version: "1.24.0"
           cache-dependency-path: |
             core/go.sum
 
@@ -125,20 +125,25 @@ jobs:
           - Signing: debug/self-use only
           EOF
 
-      - name: Create GitHub release
+      - name: Create GitHub release via API
         if: steps.detect.outputs.release_exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.upstream.outputs.latest_tag }}
           TARGET_SHA: ${{ steps.upstream.outputs.latest_sha }}
+          REPO: ${{ github.repository }}
         run: |
-          gh release create "$TAG" ./release-assets/* \
-            --target "$TARGET_SHA" \
-            --title "$TAG debug" \
-            --notes-file release-notes.md
+          set -euo pipefail
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "repos/$REPO/releases" \
+            -f tag_name="$TAG" \
+            -f target_commitish="$TARGET_SHA" \
+            -f name="$TAG debug" \
+            -f body="$(cat release-notes.md)"
 
-      - name: Upload assets to existing release
-        if: steps.detect.outputs.release_exists == 'true'
+      - name: Upload assets to release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.upstream.outputs.latest_tag }}
