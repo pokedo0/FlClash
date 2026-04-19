@@ -1,4 +1,4 @@
-name: sync upstream android debug release
+name: sync upstream android release
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ jobs:
   sync-build-release:
     runs-on: ubuntu-latest
     concurrency:
-      group: sync-upstream-android-debug-release
+      group: sync-upstream-android-release
       cancel-in-progress: true
     timeout-minutes: 90
     steps:
@@ -44,11 +44,11 @@ jobs:
           if gh api "repos/$REPO/releases/tags/$BASE_TAG" >/dev/null 2>&1; then
             suffix=$(date -u +'%Y%m%d-%H%M%S')
             release_tag="${BASE_TAG}-${suffix}"
-            release_title="${BASE_TAG} debug ${suffix}"
+            release_title="${BASE_TAG} release ${suffix}"
             echo "Existing release found for $BASE_TAG, using $release_tag"
           else
             release_tag="$BASE_TAG"
-            release_title="$BASE_TAG debug"
+            release_title="$BASE_TAG release"
             echo "No existing release found for $BASE_TAG, using original tag"
           fi
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
@@ -94,7 +94,7 @@ jobs:
           flutter --version
           flutter pub get
 
-      - name: Build Android debug package
+      - name: Build Android release package
         run: |
           dart setup.dart android
 
@@ -111,11 +111,11 @@ jobs:
           ls -lah release-assets
           test -n "$(find release-assets -maxdepth 1 -type f \( -name '*.apk' \))"
           cat > release-notes.md <<EOF
-          Sync upstream release $TAG and build Android debug package.
+          Sync upstream release $TAG and build Android release package.
 
           - Source: chen08209/FlClash@$TAG
-          - Target: Android debug package only
-          - Signing: debug/self-use only
+          - Target: Android release APK only
+          - Signing: debug keystore fallback for self-use upgrade installs
           EOF
 
       - name: Create GitHub release via API
