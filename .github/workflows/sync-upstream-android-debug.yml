@@ -72,6 +72,10 @@ jobs:
           java-version: "21"
           cache: gradle
 
+      - name: Set Gradle environment
+        run: |
+          echo "GRADLE_OPTS=-Dorg.gradle.caching=true -Dorg.gradle.configuration-cache=true -Dorg.gradle.parallel=true" >> "$GITHUB_ENV"
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -113,10 +117,13 @@ jobs:
           TAG: ${{ steps.upstream.outputs.latest_tag }}
         run: |
           set -euo pipefail
+          rm -rf release-assets
           mkdir -p release-assets
-          find dist -type f \( -name '*.apk' -o -name '*.aab' \) -exec cp {} release-assets/ \;
-          ls -la release-assets
-          test -n "$(find release-assets -maxdepth 1 -type f)"
+          find dist -type f \( -name '*.apk' \) -exec cp -L {} release-assets/ \;
+          echo "Prepared local assets:"
+          find release-assets -maxdepth 1 -type f \( -name '*.apk' \) -printf '%f\n'
+          ls -lah release-assets
+          test -n "$(find release-assets -maxdepth 1 -type f \( -name '*.apk' \))"
           cat > release-notes.md <<EOF
           Sync upstream release $TAG and build Android debug package.
 
@@ -147,5 +154,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.upstream.outputs.latest_tag }}
+          REPO: ${{ github.repository }}
         run: |
-          gh release upload "$TAG" ./release-assets/* --clobber
+          set -euo pipefail
+          mapfile -t files < <(find release-assets -maxdepth 1 -type f \( -name '*.apk' \))
+          printf 'Uploading files:\n%s\n' "${files[@]}"
+          test "${#files[@]}" -gt 0
+          gh release upload "$TAG" "${files[@]}" --clobber -R "$REPO"
