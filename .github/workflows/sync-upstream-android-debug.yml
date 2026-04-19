@@ -1,0 +1,122 @@
+name: sync upstream android debug release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  sync-build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Fetch latest upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest_tag=$(gh api repos/chen08209/FlClash/releases/latest --jq '.tag_name')
+          echo "latest_tag=$latest_tag" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream tag: $latest_tag"
+
+      - name: Skip if release already exists
+        id: skip_check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.upstream.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG already exists in fork, skipping"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG not found in fork, continue"
+          fi
+
+      - name: Add upstream remote
+        if: steps.skip_check.outputs.skip != 'true'
+        run: |
+          git remote add upstream https://github.com/chen08209/FlClash.git || true
+          git fetch upstream --tags --force
+
+      - name: Checkout upstream tag
+        if: steps.skip_check.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+          git checkout -B "build-$TAG" "tags/$TAG"
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
+      - name: Setup Java
+        if: steps.skip_check.outputs.skip != 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Go
+        if: steps.skip_check.outputs.skip != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.0'
+          cache-dependency-path: |
+            core/go.sum
+
+      - name: Setup Flutter
+        if: steps.skip_check.outputs.skip != 'true'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.35.7
+          cache: true
+
+      - name: Get Flutter dependencies
+        if: steps.skip_check.outputs.skip != 'true'
+        run: |
+          flutter --version
+          flutter pub get
+
+      - name: Build Android debug package
+        if: steps.skip_check.outputs.skip != 'true'
+        run: |
+          dart setup.dart android
+
+      - name: Prepare release assets
+        if: steps.skip_check.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          find dist -type f \( -name '*.apk' -o -name '*.aab' \) -exec cp {} release-assets/ \;
+          ls -la release-assets
+          test -n "$(find release-assets -maxdepth 1 -type f)"
+          cat > release-notes.md <<EOF
+          Sync upstream release $TAG and build Android debug package.
+
+          - Source: chen08209/FlClash@$TAG
+          - Target: Android debug package only
+          - Signing: debug/self-use only
+          EOF
+
+      - name: Create GitHub release
+        if: steps.skip_check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.upstream.outputs.latest_tag }}
+        run: |
+          gh release create "$TAG" ./release-assets/* \
+            --title "$TAG debug" \
+            --notes-file release-notes.md
