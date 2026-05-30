@@ -79,6 +79,8 @@ jobs:
           TAG: ${{ steps.upstream.outputs.latest_tag }}
         run: |
           set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout ${GITHUB_REF_NAME}
           git merge --no-ff --no-commit "tags/$TAG"
 
