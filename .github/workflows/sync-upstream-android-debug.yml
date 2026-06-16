@@ -17,6 +17,7 @@ jobs:
       - name: Checkout current repo
         uses: actions/checkout@v5
         with:
+          token: ${{ secrets.PAT || github.token }}
           fetch-depth: 0
           submodules: recursive
 
