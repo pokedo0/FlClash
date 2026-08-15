@@ -4,23 +4,8 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Release version (e.g. 0.8.95 or v0.8.95)'
-        required: true
-        default: '0.8.95'
-      target_platform:
-        description: 'Target platform to build'
-        required: true
-        default: 'android'
-        type: choice
-        options:
-          - 'android'
-          - 'all'
-
 env:
-  IS_STABLE: ${{ github.event_name == 'workflow_dispatch' || !contains(github.ref, '-') }}
+  IS_STABLE: ${{ !contains(github.ref, '-') }}
   FLUTTER_VERSION: '3.44.4'
 
 jobs:
@@ -106,7 +91,6 @@ jobs:
 
   windows-helper-test:
     name: Windows helper test
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.target_platform == 'all')
     runs-on: windows-2022
     steps:
       - name: Checkout
@@ -119,8 +103,8 @@ jobs:
         run: cargo test --manifest-path services/helper/Cargo.toml --features windows-service
 
   build:
-    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch'
-    needs: [ test ]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [ test, windows-helper-test ]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -147,18 +131,8 @@ jobs:
             arch: arm64
 
     steps:
-      - name: Check platform filter
-        id: filter
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.target_platform }}" = "android" ] && [ "${{ matrix.platform }}" != "android" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup rust
-        if: steps.filter.outputs.skip != 'true' && startsWith(matrix.os, 'windows-11-arm')
+        if: startsWith(matrix.os, 'windows-11-arm')
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://win.rustup.rs/aarch64" -OutFile rustup-init.exe
@@ -167,45 +141,22 @@ jobs:
           Add-Content $env:GITHUB_PATH $cargoPath
 
       - name: Checkout
-        if: steps.filter.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Update version in pubspec.yaml
-        if: steps.filter.outputs.skip != 'true'
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            raw_ver="${{ inputs.version }}"
-            clean_ver="${raw_ver#v}"
-            today="$(date +%Y%m%d)"
-            build_num="${today}${{ github.run_number }}"
-            full_ver="${clean_ver}+${build_num}"
-            echo "Setting version to $full_ver in pubspec.yaml"
-            sed -i.bak -E "s/^version: .*/version: $full_ver/" pubspec.yaml
-            grep "^version:" pubspec.yaml
-          fi
-
       - name: Setup Android Signing
-        if: steps.filter.outputs.skip != 'true' && startsWith(matrix.platform,'android')
+        if: startsWith(matrix.platform,'android')
         run: |
-          keystore_b64="${{ secrets.ANDROID_KEYSTORE_BASE64 || secrets.KEYSTORE }}"
-          service_json_b64="${{ secrets.SERVICE_JSON }}"
-          if [ -n "$keystore_b64" ]; then
-            printf '%s' "$keystore_b64" | base64 --decode > android/app/keystore.jks
-          fi
-          if [ -n "$service_json_b64" ]; then
-            printf '%s' "$service_json_b64" | base64 --decode > android/app/google-services.json
-          fi
+          echo "${{ secrets.KEYSTORE }}" | base64 --decode > android/app/keystore.jks
+          echo "${{ secrets.SERVICE_JSON }}" | base64 --decode > android/app/google-services.json
           {
-            echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS || secrets.KEY_ALIAS }}"
-            echo "storePassword=${{ secrets.ANDROID_STORE_PASSWORD || secrets.STORE_PASSWORD }}"
-            echo "keyPassword=${{ secrets.ANDROID_KEY_PASSWORD || secrets.KEY_PASSWORD }}"
+            echo "keyAlias=${{ secrets.KEY_ALIAS }}"
+            echo "storePassword=${{ secrets.STORE_PASSWORD }}"
+            echo "keyPassword=${{ secrets.KEY_PASSWORD }}"
           } >> android/local.properties
 
       - name: Setup Go
-        if: steps.filter.outputs.skip != 'true'
         uses: actions/setup-go@v5
         with:
           go-version: '1.26.4'
@@ -213,11 +164,10 @@ jobs:
             core/go.sum
 
       - name: Enable git long paths (Windows)
-        if: steps.filter.outputs.skip != 'true' && startsWith(matrix.os, 'windows')
+        if: startsWith(matrix.os, 'windows')
         run: git config --global core.longpaths true
 
       - name: Setup Flutter
-        if: steps.filter.outputs.skip != 'true'
         uses: subosito/flutter-action@v2
         with:
           channel: master
@@ -225,13 +175,13 @@ jobs:
           cache: true
 
       - name: Setup Xcode
-        if: steps.filter.outputs.skip != 'true' && startsWith(matrix.platform,'macos')
+        if: startsWith(matrix.platform,'macos')
         run: |
           sudo xcode-select -s /Applications/Xcode_26.3.app || sudo xcode-select -s /Applications/Xcode_26.2.app
           xcodebuild -version
 
       - name: Setup NDK
-        if: steps.filter.outputs.skip != 'true' && startsWith(matrix.platform,'android')
+        if: startsWith(matrix.platform,'android')
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r28c
@@ -239,17 +189,14 @@ jobs:
           link-to-sdk: true
 
       - name: Get Flutter Dependency
-        if: steps.filter.outputs.skip != 'true'
         run: |
           flutter --version
           flutter pub get
 
       - name: Setup
-        if: steps.filter.outputs.skip != 'true'
         run: dart setup.dart ${{ matrix.platform }} ${{ env.IS_STABLE == 'true' && '--env stable' || '' }} -v
 
       - name: Upload
-        if: steps.filter.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: artifact-${{ matrix.platform }}${{ matrix.arch && format('-{0}', matrix.arch) }}
@@ -257,7 +204,7 @@ jobs:
           overwrite: true
 
   changelog:
-    if: github.event_name == 'push' && !contains(github.ref, '-')
+    if: ${{ !contains(github.ref, '-') }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -315,7 +262,6 @@ jobs:
     permissions:
       contents: write
     needs: [ build ]
-    if: always() && needs.build.result == 'success'
     runs-on: ubuntu-latest
     services:
       telegram-bot-api:
@@ -338,20 +284,6 @@ jobs:
           pattern: artifact-*
           merge-multiple: true
 
-      - name: Determine Release Tag & Version
-        id: release_meta
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            raw_ver="${{ inputs.version }}"
-            clean_ver="${raw_ver#v}"
-            echo "release_tag=v${clean_ver}" >> "$GITHUB_OUTPUT"
-            echo "version=${clean_ver}" >> "$GITHUB_OUTPUT"
-          else
-            echo "release_tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-            echo "version=$(echo "${{ github.ref_name }}" | sed 's/^v//')" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Generate release.md
         shell: bash
         run: |
@@ -359,13 +291,11 @@ jobs:
             curl --silent "https://api.github.com/repos/chen08209/FlClash/releases/latest" |
               sed -nE 's/.*"tag_name": "([^"]+)".*/\1/p'
           )
-          bash .github/scripts/generate_release_notes.sh "$pre_tag" release.md || echo "Release notes generated" > release.md
-
+          bash .github/scripts/generate_release_notes.sh "$pre_tag" release.md
       - name: Push to telegram
-        if: env.TELEGRAM_BOT_TOKEN != ''
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TAG: ${{ steps.release_meta.outputs.release_tag }}
+          TAG: ${{ github.ref_name }}
           RUN_ID: ${{ github.run_id }}
         run: |
           python -m pip install --upgrade pip
@@ -374,11 +304,8 @@ jobs:
 
       - name: Patch release.md
         run: |
-          version="${{ steps.release_meta.outputs.version }}"
-          if [ -f ./.github/release_template.md ]; then
-            sed "s|VERSION|$version|g" ./.github/release_template.md >> release.md
-            sed -i "s|chen08209/FlClash|${{ github.repository }}|g" release.md
-          fi
+          version=$(echo "${{ github.ref_name }}" | sed 's/^v//')
+          sed "s|VERSION|$version|g" ./.github/release_template.md >> release.md
 
       - name: Generate sha256
         if: ${{ env.IS_STABLE == 'true' }}
@@ -387,20 +314,16 @@ jobs:
           sha256sum ./* > SHA256SUMS
 
       - name: Release
-        if: ${{ env.IS_STABLE == 'true' || github.event_name == 'workflow_dispatch' }}
+        if: ${{ env.IS_STABLE == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release_meta.outputs.release_tag }}
-          name: ${{ steps.release_meta.outputs.release_tag }}
           files: ./dist/*
           body_path: './release.md'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Homebrew Cask Source Dir
-        if: ${{ env.IS_STABLE == 'true' && github.repository == 'chen08209/FlClash' }}
+        if: ${{ env.IS_STABLE == 'true' }}
         run: |
-          version="${{ steps.release_meta.outputs.version }}"
+          version=$(echo "${{ github.ref_name }}" | sed 's/^v//')
           arm_sha=$(sha256sum "./dist/FlClash-${version}-macos-arm64.dmg" | awk '{print $1}')
           amd_sha=$(sha256sum "./dist/FlClash-${version}-macos-amd64.dmg" | awk '{print $1}')
 
@@ -412,7 +335,7 @@ jobs:
             ./.github/homebrew_cask_template.rb > ./brew/Casks/flclash.rb
 
       - name: Push to Homebrew tap
-        if: ${{ env.IS_STABLE == 'true' && github.repository == 'chen08209/FlClash' }}
+        if: ${{ env.IS_STABLE == 'true' }}
         uses: cpina/github-action-push-to-another-repository@v1.7.2
         env:
           SSH_DEPLOY_KEY: ${{ secrets.HOMEBREW_SSH_DEPLOY_KEY }}
@@ -423,18 +346,18 @@ jobs:
           user-name: 'chen08029'
           user-email: 'chen08209@gmail.com'
           target-branch: main
-          commit-message: Update Homebrew cask from ${{ steps.release_meta.outputs.release_tag }}
+          commit-message: Update Homebrew cask from ${{ github.ref_name }}
           target-directory: /
 
       - name: Create Fdroid Source Dir
-        if: ${{ env.IS_STABLE == 'true' && github.repository == 'chen08209/FlClash' }}
+        if: ${{ env.IS_STABLE == 'true' }}
         run: |
           mkdir -p ./tmp
           cp ./dist/*android-arm64-v8a* ./tmp/ || true
           echo "Files copied successfully"
 
       - name: Push to fdroid repo
-        if: ${{ env.IS_STABLE == 'true' && github.repository == 'chen08209/FlClash' }}
+        if: ${{ env.IS_STABLE == 'true' }}
         uses: cpina/github-action-push-to-another-repository@v1.7.2
         env:
           SSH_DEPLOY_KEY: ${{ secrets.SSH_DEPLOY_KEY }}
@@ -445,5 +368,5 @@ jobs:
           user-name: 'chen08029'
           user-email: 'chen08209@gmail.com'
           target-branch: main
-          commit-message: Update from ${{ steps.release_meta.outputs.release_tag }}
+          commit-message: Update from ${{ github.ref_name }}
           target-directory: /tmp/
