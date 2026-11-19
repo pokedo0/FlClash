@@ -151,7 +151,7 @@ jobs:
             vcode="$(printf '%s\n' "$badging" | sed -nE "s/^package: .*versionCode='([^']+)'.*/\1/p" | head -n 1)"
             certs="$("$build_tools/apksigner" verify --print-certs "$apk")"
             echo "Verified $apk -> package=$pkg versionCode=$vcode"
-            printf '%s\n' "$certs" | grep -E 'Signer #1 certificate (DN|SHA-256 digest):'
+            printf '%s\n' "$certs" | grep -E 'certificate (DN|SHA-256 digest):' || printf '%s\n' "$certs"
             if [[ "$pkg" != "com.news.toutiao" ]]; then
               echo "::error::Expected package com.news.toutiao, got $pkg in $apk"
               exit 1
