@@ -1,24 +1,17 @@
-import 'package:fl_clash/common/common.dart';
-import 'package:fl_clash/common/theme.dart';
 import 'package:fl_clash/enum/enum.dart';
-import 'package:fl_clash/l10n/l10n.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
 import 'package:fl_clash/state.dart';
 import 'package:fl_clash/views/proxies/list.dart';
 import 'package:fl_clash/views/proxies/proxies.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-class _TestProfiles extends Profiles {
-  final List<Profile> initial;
-  _TestProfiles(this.initial);
-  @override
-  List<Profile> build() => initial;
-}
+import '../helpers/test_app.dart';
+import '../helpers/test_profiles.dart';
+import 'package:prism_ui/prism_ui.dart' hide ListHeader;
 
 void main() {
   Future<ProviderContainer> pumpListLayout(
@@ -50,7 +43,7 @@ void main() {
     );
     final container = ProviderContainer(
       overrides: [
-        profilesProvider.overrideWith(() => _TestProfiles([profile])),
+        profilesProvider.overrideWith(() => TestProfiles([profile])),
         currentProfileIdProvider.overrideWithBuild((_, _) => profile.id),
         currentGroupsStateProvider.overrideWithValue(
           GroupsState(value: [group]),
@@ -68,18 +61,9 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: MaterialApp(
-          localizationsDelegates: const [
-            AppLocalizations.delegate,
-            GlobalMaterialLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate,
-            GlobalWidgetsLocalizations.delegate,
-          ],
-          supportedLocales: AppLocalizations.delegate.supportedLocales,
+        child: HostApp(
           builder: (context, child) {
-            globalState.measure = Measure.of(context, 1);
-            globalState.theme = CommonTheme.of(context, 1);
-            return child!;
+            return wrapAppScopes(context, child!);
           },
           home: const ProxiesView(),
         ),
@@ -94,7 +78,7 @@ void main() {
     final ctx = FocusManager.instance.primaryFocus?.context;
     if (ctx == null) return false;
     return ctx.findAncestorWidgetOfExactType<ListHeader>() != null &&
-        ctx.findAncestorWidgetOfExactType<FilledButton>() != null &&
+        ctx.findAncestorWidgetOfExactType<Card>() != null &&
         ctx.findAncestorWidgetOfExactType<IconButton>() == null;
   }
 

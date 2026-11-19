@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 
-enum CoreProcessOwner { direct, windowsHelper }
+enum CoreProcessOwner { direct, helper }
 
 enum CoreLifecycleOutcome { applied, coalesced, superseded }
 
@@ -103,7 +103,7 @@ final class DesktopCoreFailure implements Exception {
   @override
   String toString() {
     return 'DesktopCoreFailure($code, $phase, revision: $revision, '
-        'session: $sessionId, owner: $owner, pid: $pid, '
+        'owner: $owner, pid: $pid, '
         'generation: $connectionGeneration, cause: $cause)';
   }
 }

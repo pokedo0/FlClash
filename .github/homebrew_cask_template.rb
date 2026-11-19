@@ -7,7 +7,7 @@ cask "flclash" do
     sha256 arm:   "ARM_SHA256",
            intel: "AMD_SHA256"
 
-    url "https://github.com/chen08209/FlClash/releases/download/v#{version}/FlClash-#{version}-macos-#{arch}.dmg"
+    url "https://github.com/chen08209/FlClash/releases/download/v#{version}/FlClash-LINE-#{version}-macos-#{arch}.dmg"
   end
 
   name "FlClash"
@@ -23,9 +23,11 @@ cask "flclash" do
 
   app "FlClash.app"
 
-  postflight do
-    system_command "xattr",
-                   args: ["-rd", "com.apple.quarantine", "#{appdir}/FlClash.app"]
+  postflight_steps do
+    run "/usr/bin/xattr",
+        args:           ["-rd", "com.apple.quarantine", "{{appdir}}/FlClash.app"],
+        writable_paths: ["FlClash.app"],
+        writable_base:  :appdir
   end
 
   uninstall quit: "com.follow.clash"

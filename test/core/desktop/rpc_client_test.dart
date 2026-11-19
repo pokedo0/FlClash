@@ -1,12 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:fl_clash/core/desktop/rpc_client.dart';
 import 'package:fl_clash/core/event.dart';
 import 'package:fl_clash/core/method.dart';
+import 'package:fl_clash/core/spill.dart';
+import 'package:fl_clash/models/models.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart';
 
+import '../../helpers/app_paths.dart';
 import 'fakes.dart';
 
 Future<Map<String, Object?>> _sentRequest(
@@ -16,11 +21,61 @@ Future<Map<String, Object?>> _sentRequest(
   return jsonDecode(transport.sentMessages.single) as Map<String, Object?>;
 }
 
+Uint8List _connectionsFrame(Object? id, int count) {
+  final frame = utf8.encode(
+    jsonEncode({
+      'id': id,
+      'result': {
+        'connections': [
+          for (var index = 0; index < count; index++)
+            {
+              'id': 'connection-$index',
+              'start': '2026-01-01T00:00:00Z',
+              'metadata': {'network': 'tcp', 'host': 'host-$index.example.com'},
+              'chains': ['proxy'],
+              'rule': 'MATCH',
+              'rulePayload': '',
+            },
+        ],
+      },
+    }),
+  );
+  expect(frame.length, greaterThanOrEqualTo(coreIsolateDecodeBytes));
+  return frame;
+}
+
+Object? _connectionCount(Object? result) => trackerInfosOf(result).length;
+
 void main() {
+  test('reads a response the Core spilled to a file', () async {
+    final home = Directory.systemTemp.createTempSync('rpc_spill');
+    addTearDown(() => home.deleteSync(recursive: true));
+    await useAppPaths(home);
+    final transport = FakeDesktopCoreTransport.connected();
+    final client = CoreRpcClient(transport);
+    final invocation = client.invoke(method: CoreMethod.configRead);
+    final request = await _sentRequest(transport);
+    final file = File(join(home.path, coreSpillDirectoryName, '1.json'))
+      ..createSync(recursive: true)
+      ..writeAsStringSync(
+        jsonEncode({
+          'id': request['id'],
+          'result': {'mode': 'rule'},
+        }),
+      );
+
+    transport.addJson({'id': request['id'], 'result': null, 'file': file.path});
+
+    expect(await invocation, {'mode': 'rule'});
+    expect(file.existsSync(), isFalse);
+    await client.close();
+    await transport.close();
+  });
+
   test('correlates a response and ignores a late duplicate', () async {
     final transport = FakeDesktopCoreTransport.connected();
     final client = CoreRpcClient(transport);
-    final invocation = client.invoke<bool>(method: CoreMethod.getIsInit);
+    final invocation = client.invoke(method: CoreMethod.coreInitialized);
     final request = await _sentRequest(transport);
 
     transport.addJson({'id': request['id'], 'result': true});
@@ -36,7 +91,7 @@ void main() {
   test('disconnect fails every pending request exactly once', () async {
     final transport = FakeDesktopCoreTransport.connected();
     final client = CoreRpcClient(transport);
-    final invocation = client.invoke<bool>(method: CoreMethod.getIsInit);
+    final invocation = client.invoke(method: CoreMethod.coreInitialized);
     await _sentRequest(transport);
 
     transport.disconnect(1);
@@ -56,10 +111,78 @@ void main() {
     await transport.close();
   });
 
+  test(
+    'decodes a large response in an isolate ahead of a later disconnect',
+    () async {
+      final transport = FakeDesktopCoreTransport.connected();
+      final client = CoreRpcClient(transport);
+      final invocation = client.invoke(method: CoreMethod.connectionList);
+      final request = await _sentRequest(transport);
+      final frame = _connectionsFrame(request['id'], 600);
+
+      transport.addFrame(frame);
+      transport.disconnect(1);
+
+      final result = await invocation;
+      expect(
+        result,
+        isA<List<TrackerInfo>>().having((l) => l.length, 'length', 600),
+      );
+      expect(client.pendingCount, 0);
+      await client.close();
+      await transport.close();
+    },
+  );
+
+  test(
+    'a disconnect held behind a large response spares the next connection',
+    () async {
+      final transport = FakeDesktopCoreTransport.connected();
+      final client = CoreRpcClient(transport);
+      final listing = client.invoke(method: CoreMethod.connectionList);
+      final request = await _sentRequest(transport);
+
+      transport.addFrame(_connectionsFrame(request['id'], 20000));
+      transport.disconnect(1);
+      await pumpEventQueue();
+      transport.connect(generation: 2);
+      final initialized = client.invoke(method: CoreMethod.coreInitialized);
+      await pumpEventQueue();
+      final next =
+          jsonDecode(transport.sentMessages.last) as Map<String, Object?>;
+      transport.addJson({'id': next['id'], 'result': true});
+
+      expect(await initialized, isTrue);
+      expect(
+        await listing,
+        isA<List<TrackerInfo>>().having((l) => l.length, 'length', 20000),
+      );
+      expect(client.pendingCount, 0);
+      await client.close();
+      await transport.close();
+    },
+  );
+
+  test('runs a request\'s own model on a large response', () async {
+    final transport = FakeDesktopCoreTransport.connected();
+    final client = CoreRpcClient(transport);
+    final invocation = client.invoke(
+      method: CoreMethod.connectionList,
+      model: _connectionCount,
+    );
+    final request = await _sentRequest(transport);
+
+    transport.addFrame(_connectionsFrame(request['id'], 600));
+
+    expect(await invocation, 600);
+    await client.close();
+    await transport.close();
+  });
+
   test('maps a Core error envelope to CoreMethodException', () async {
     final transport = FakeDesktopCoreTransport.connected();
     final client = CoreRpcClient(transport);
-    final invocation = client.invoke<bool>(method: CoreMethod.getIsInit);
+    final invocation = client.invoke(method: CoreMethod.coreInitialized);
     final request = await _sentRequest(transport);
 
     transport.addJson({
@@ -89,7 +212,7 @@ void main() {
     final client = CoreRpcClient(transport);
 
     await expectLater(
-      client.invoke<bool>(method: CoreMethod.getIsInit),
+      client.invoke(method: CoreMethod.coreInitialized),
       throwsA(
         isA<CoreMethodException>().having(
           (error) => error.code,
@@ -107,22 +230,145 @@ void main() {
     final transport = FakeDesktopCoreTransport.connected();
     final client = CoreRpcClient(transport);
 
-    final result = await client.invoke<bool>(
-      method: CoreMethod.getIsInit,
-      timeout: Duration.zero,
+    await expectLater(
+      client.invoke(method: CoreMethod.coreInitialized, timeout: Duration.zero),
+      throwsA(isA<TimeoutException>()),
     );
-
-    expect(result, isNull);
     expect(client.pendingCount, 0);
     await client.close();
     await transport.close();
   });
 
+  test('waiting for a connection never outlives the request timeout', () async {
+    final transport = FakeDesktopCoreTransport();
+    final client = CoreRpcClient(transport);
+    final stopwatch = Stopwatch()..start();
+
+    await expectLater(
+      client.invoke(
+        method: CoreMethod.proxyTestDelay,
+        timeout: const Duration(milliseconds: 150),
+      ),
+      throwsA(isA<TimeoutException>()),
+    );
+    expect(stopwatch.elapsed, lessThan(const Duration(seconds: 5)));
+    expect(transport.sentMessages, isEmpty);
+    expect(client.pendingCount, 0);
+    await client.close();
+    await transport.close();
+  });
+
+  test('a silent link times out the pending request', () async {
+    final transport = FakeDesktopCoreTransport.connected();
+    final client = CoreRpcClient(transport);
+
+    await expectLater(
+      client.invoke(
+        method: CoreMethod.coreInitialized,
+        timeout: const Duration(milliseconds: 150),
+      ),
+      throwsA(isA<TimeoutException>()),
+    );
+    expect(client.pendingCount, 0);
+    await client.close();
+    await transport.close();
+  });
+
+  test('a pending request survives while Core answers its siblings', () async {
+    final transport = FakeDesktopCoreTransport.connected();
+    final client = CoreRpcClient(transport);
+    const timeout = Duration(milliseconds: 300);
+
+    final slow = client.invoke(
+      method: CoreMethod.proxyTestDelay,
+      timeout: timeout,
+    );
+    final sibling = client.invoke(
+      method: CoreMethod.proxyTestDelay,
+      timeout: timeout,
+    );
+    await pumpEventQueue();
+    final requests = transport.sentMessages
+        .map((message) => jsonDecode(message) as Map<String, Object?>)
+        .toList();
+    expect(requests, hasLength(2));
+
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    transport.addJson({'id': requests[1]['id'], 'result': true});
+    expect(await sibling, isTrue);
+
+    // Past the original window, but the link proved itself 200ms in.
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    expect(client.pendingCount, 1);
+    transport.addJson({'id': requests[0]['id'], 'result': true});
+    expect(await slow, isTrue);
+
+    await client.close();
+    await transport.close();
+  });
+
+  test('extension is capped so a wedged request still fails', () async {
+    final transport = FakeDesktopCoreTransport.connected();
+    final client = CoreRpcClient(transport);
+    const timeout = Duration(milliseconds: 200);
+
+    final wedged = client.invoke(
+      method: CoreMethod.proxyTestDelay,
+      timeout: timeout,
+    );
+    await pumpEventQueue();
+    final request = jsonDecode(transport.sentMessages.first) as Map;
+
+    // Core stays chatty about everything except this request.
+    final chatter = Timer.periodic(
+      const Duration(milliseconds: 50),
+      (_) => transport.addJson({'id': 'other', 'result': true}),
+    );
+    addTearDown(chatter.cancel);
+
+    await expectLater(wedged, throwsA(isA<TimeoutException>()));
+    expect(client.pendingCount, 0);
+    expect(request['id'], isNotNull);
+
+    await client.close();
+    await transport.close();
+  });
+
+  test(
+    'a long request budget stops extending once the grace is spent',
+    () async {
+      const timeout = Duration(milliseconds: 200);
+      const grace = Duration(milliseconds: 100);
+      expect(timeout + grace, lessThan(timeout * 3));
+
+      final transport = FakeDesktopCoreTransport.connected();
+      final client = CoreRpcClient(transport, extensionGrace: grace);
+
+      final stopwatch = Stopwatch()..start();
+      final wedged = client.invoke(
+        method: CoreMethod.coreInitialized,
+        timeout: timeout,
+      );
+      final chatter = Timer.periodic(
+        const Duration(milliseconds: 30),
+        (_) => transport.addJson({'id': 'other', 'result': true}),
+      );
+      addTearDown(chatter.cancel);
+
+      await expectLater(wedged, throwsA(isA<TimeoutException>()));
+      expect(stopwatch.elapsed, lessThan(const Duration(milliseconds: 500)));
+      expect(client.pendingCount, 0);
+
+      await client.close();
+      await transport.close();
+    },
+  );
+
   test('malformed data does not terminate response processing', () async {
     final transport = FakeDesktopCoreTransport.connected();
     final client = CoreRpcClient(transport);
     transport.addFrame(Uint8List.fromList(utf8.encode('{invalid')));
-    final invocation = client.invoke<bool>(method: CoreMethod.getIsInit);
+    final invocation = client.invoke(method: CoreMethod.coreInitialized);
     final request = await _sentRequest(transport);
 
     transport.addJson({'id': request['id'], 'result': true});
@@ -139,7 +385,7 @@ void main() {
     coreEventManager.addListener(listener);
 
     transport.addJson({
-      'method': CoreMethod.message.name,
+      'method': CoreMethod.message.wireName,
       'arguments': {'type': 'loaded', 'data': 'provider-a'},
     });
 
@@ -152,7 +398,7 @@ void main() {
   test('close fails pending requests and is idempotent', () async {
     final transport = FakeDesktopCoreTransport.connected();
     final client = CoreRpcClient(transport);
-    final invocation = client.invoke<bool>(method: CoreMethod.getIsInit);
+    final invocation = client.invoke(method: CoreMethod.coreInitialized);
     await _sentRequest(transport);
 
     final failure = expectLater(
@@ -176,7 +422,7 @@ void main() {
   test('transport failure before connection fails without waiting', () async {
     final transport = FakeDesktopCoreTransport();
     final client = CoreRpcClient(transport);
-    final invocation = client.invoke<bool>(method: CoreMethod.getIsInit);
+    final invocation = client.invoke(method: CoreMethod.coreInitialized);
 
     transport.fail(StateError('bind failed'));
 
